@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Jupyter
+.ipynb_checkpoints/
+
+# ML / run artifacts (these are produced by the pipeline; regenerate, don't commit)
+training_data.npz
+stuck_classifier.lgb
+*.lgb
+*.joblib
+*.pkl
+out/
+logs/
+results*.jsonl
+
+# SLURM
+slurm-*.out
+*.sbatch.out
+*.sbatch.err
+
+# Conda
+.conda/
+
+# Local overrides
+.env
+.env.local
