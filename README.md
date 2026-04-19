@@ -34,8 +34,8 @@ macOS or CPU-only machines can run the code (it falls back transparently), but t
 ### Linux (native)
 
 ```bash
-git clone https://github.com/<your-user>/<repo>.git
-cd <repo>
+git clone https://github.com/sumedhk0/ML-Assisted-Particle-Swarm-Optimization.git
+cd "ML-Assisted-Particle-Swarm-Optimization"
 conda env create -f environment.yml
 conda activate pso-gpu
 python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
