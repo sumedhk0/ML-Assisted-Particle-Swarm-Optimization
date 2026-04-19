@@ -64,7 +64,7 @@ bash Miniconda3-latest-Linux-x86_64.sh -b
 source ~/miniconda3/bin/activate
 
 # Clone the repo INSIDE WSL (not on /mnt/c — file I/O is ~10× slower there)
-git clone https://github.com/<your-user>/<repo>.git ~/pso
+git clone https://github.com/sumedhk0/ML-Assisted-Particle-Swarm-Optimization.git ~/pso
 cd ~/pso
 
 # Create env + verify GPU passthrough
@@ -87,8 +87,8 @@ ssh you@cluster.example.edu
 
 # Clone into your scratch space
 cd $SCRATCH
-git clone https://github.com/<your-user>/<repo>.git
-cd <repo>
+git clone https://github.com/sumedhk0/ML-Assisted-Particle-Swarm-Optimization.git
+cd "ML-Assisted-Particle-Swarm-Optimization"
 
 # Load modules (edit slurm/*.sbatch to match your cluster's module system)
 module load anaconda/2024.02   # or whatever's available
@@ -103,8 +103,8 @@ Then edit the three `slurm/*.sbatch` files: uncomment the `module load` lines, a
 ### macOS / CPU-only
 
 ```bash
-git clone https://github.com/<your-user>/<repo>.git
-cd <repo>
+git clone https://github.com/sumedhk0/ML-Assisted-Particle-Swarm-Optimization.git
+cd "ML-Assisted-Particle-Swarm-Optimization"
 conda env create -f environment.yml
 conda activate pso-gpu
 # All commands below work with --device cpu but are significantly slower
