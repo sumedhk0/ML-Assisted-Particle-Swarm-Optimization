@@ -62,20 +62,59 @@ def _run_one(func, dim: int, n_iters: int, sample_every: int,
     return X, y
 
 
+def _parse_function_choices(functions: str | None) -> list[str] | None:
+    if functions is None:
+        return None
+    names = [name.strip() for name in functions.split(",") if name.strip()]
+    if not names:
+        raise ValueError("At least one function name is required")
+
+    valid = set(STANDARD_FUNCS) | {"gaussian_mixture"}
+    unknown = [name for name in names if name not in valid]
+    if unknown:
+        raise ValueError(
+            f"Unknown function(s): {unknown}. "
+            f"Available: {sorted(valid)}"
+        )
+    return names
+
+
+def _parse_dim_choices(dims: str | None) -> list[int]:
+    if dims is None:
+        return list(DIM_BUCKET)
+    values = [int(part.strip()) for part in dims.split(",") if part.strip()]
+    if not values:
+        raise ValueError("At least one dimension is required")
+    if any(dim <= 0 for dim in values):
+        raise ValueError(f"Dimensions must be positive: {values}")
+    return values
+
+
 def generate(n_runs: int, out_path: str, device: str,
-             n_iters: int = 200, sample_every: int = 5):
+             n_iters: int = 200, sample_every: int = 5,
+             function_choices: list[str] | None = None,
+             dim_choices: list[int] | None = None):
+    dim_bucket = list(DIM_BUCKET) if dim_choices is None else list(dim_choices)
     all_X, all_y, all_run = [], [], []
 
     for run_idx in range(n_runs):
         rng = np.random.default_rng(run_idx)
-        dim = int(rng.choice(DIM_BUCKET))
+        dim = int(rng.choice(dim_bucket))
 
-        if rng.random() < 0.5:
-            name = str(rng.choice(STANDARD_FUNCS))
-            func = get_function(name, dim, device=device)
+        if function_choices is None:
+            if rng.random() < 0.5:
+                name = str(rng.choice(STANDARD_FUNCS))
+            else:
+                name = "gaussian_mixture"
         else:
-            name = f"gm_{run_idx}"
+            name = str(rng.choice(function_choices))
+
+        if name == "gaussian_mixture":
             func = GaussianMixture(dim=dim, seed=run_idx + 10_000, device=device)
+            log_name = f"gm_{run_idx}"
+        else:
+            func = get_function(name, dim, device=device)
+            log_name = name
 
         try:
             X, y = _run_one(func, dim, n_iters, sample_every, device, seed=run_idx)
@@ -86,7 +125,7 @@ def generate(n_runs: int, out_path: str, device: str,
         all_X.append(X)
         all_y.append(y)
         all_run.append(np.full(len(y), run_idx, dtype=np.int32))
-        print(f"[run {run_idx:4d}] dim={dim:3d} func={name:16s} "
+        print(f"[run {run_idx:4d}] dim={dim:3d} func={log_name:16s} "
               f"rows={len(y):5d} pos_rate={y.mean():.3f}")
 
     X = np.concatenate(all_X)
@@ -103,6 +142,19 @@ if __name__ == "__main__":
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--iters", type=int, default=200)
     parser.add_argument("--sample-every", type=int, default=5)
+    parser.add_argument(
+        "--functions",
+        type=str,
+        default=None,
+        help="Optional comma-separated function names. "
+             "Use standard benchmark names and/or gaussian_mixture.",
+    )
+    parser.add_argument(
+        "--dims",
+        type=str,
+        default=None,
+        help="Optional comma-separated list of dimensions.",
+    )
     args = parser.parse_args()
 
     device = args.device
@@ -110,5 +162,11 @@ if __name__ == "__main__":
         print("CUDA not available; falling back to CPU")
         device = "cpu"
 
+    function_choices = _parse_function_choices(args.functions)
+    dim_choices = _parse_dim_choices(args.dims)
+
     generate(args.runs, args.out, device=device,
-             n_iters=args.iters, sample_every=args.sample_every)
+             n_iters=args.iters,
+             sample_every=args.sample_every,
+             function_choices=function_choices,
+             dim_choices=dim_choices)
