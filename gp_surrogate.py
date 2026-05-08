@@ -122,6 +122,66 @@ class GPSurrogate:
         x, neg = self._acquisition_opt(acq, bounds, n_starts, iters)
         return x, -neg
 
+    def _default_penalty_radius(self, bounds) -> float:
+        """One ARD length-scale: the natural distance over which the GP
+        considers two points correlated. Penalty centered on a pick falls off
+        over this distance, encouraging next picks beyond it."""
+        low, high = bounds
+        span = high - low
+        if self.model is None:
+            return 0.05 * span
+        ls = self.model.covar_module.base_kernel.lengthscale.detach()
+        radius = float(ls.median())
+        # Clamp to a reasonable fraction of bounds: too small -> negligible
+        # diversity pressure; too large -> picks pushed to corners.
+        return max(0.02 * span, min(radius, 0.5 * span))
+
+    def _find_batch(self, base_acq_fn, bounds, K: int,
+                    penalty_radius: float | None,
+                    penalty_strength: float,
+                    n_starts: int, iters: int):
+        if penalty_radius is None:
+            penalty_radius = self._default_penalty_radius(bounds)
+        r2 = 2.0 * penalty_radius * penalty_radius
+
+        picks: list[torch.Tensor] = []
+        for _ in range(K):
+            picked_stack = torch.stack(picks) if picks else None
+
+            def acq(x, _picked=picked_stack):
+                base = base_acq_fn(x)
+                if _picked is None:
+                    return base
+                # x: (S, D), _picked: (P, D) -> diffs: (S, P, D)
+                diffs = x.unsqueeze(1) - _picked.unsqueeze(0)
+                d2 = (diffs * diffs).sum(dim=-1)
+                bumps = penalty_strength * torch.exp(-d2 / r2)
+                return base + bumps.sum(dim=-1)
+
+            x_new, _ = self._acquisition_opt(acq, bounds, n_starts, iters)
+            picks.append(x_new)
+        return torch.stack(picks)
+
+    def find_batch_lcb_minimum(self, bounds, K: int, kappa: float = 1.6,
+                               penalty_radius: float | None = None,
+                               penalty_strength: float = 1.0,
+                               n_starts: int = 50, iters: int = 60):
+        def base(x):
+            m, s = self._posterior(x)
+            return m - kappa * s
+        return self._find_batch(base, bounds, K, penalty_radius,
+                                penalty_strength, n_starts, iters)
+
+    def find_batch_max_uncertainty(self, bounds, K: int,
+                                   penalty_radius: float | None = None,
+                                   penalty_strength: float = 1.0,
+                                   n_starts: int = 50, iters: int = 60):
+        def base(x):
+            _, s = self._posterior(x)
+            return -s
+        return self._find_batch(base, bounds, K, penalty_radius,
+                                penalty_strength, n_starts, iters)
+
 
 if __name__ == "__main__":
     # Toy 2D: fit on a quadratic, confirm low uncertainty at training points
@@ -144,4 +204,15 @@ if __name__ == "__main__":
     x_min, v = gp.find_minimum(bounds=(-3.0, 3.0), n_starts=20, iters=40)
     print(f"GP argmin: {x_min.tolist()}  predicted val: {v:.3f}")
     assert x_min.norm() < 1.5, "argmin should be near origin for quadratic"
+
+    # Batch acquisition diversity check
+    K = 5
+    batch = gp.find_batch_lcb_minimum(bounds=(-3.0, 3.0), K=K, n_starts=20, iters=40)
+    assert batch.shape == (K, 2)
+    pdists = (batch.unsqueeze(0) - batch.unsqueeze(1)).norm(dim=-1)
+    pdists = pdists + torch.eye(K) * 1e6  # mask diagonal
+    min_pair = float(pdists.min())
+    radius = gp._default_penalty_radius((-3.0, 3.0))
+    print(f"batch K={K} min pairwise dist: {min_pair:.3f}  (radius={radius:.3f})")
+    assert min_pair > 0.5 * radius, "batch picks should be diverse, not duplicates"
     print("gp_surrogate.py checks passed")

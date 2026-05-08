@@ -16,7 +16,8 @@ from gp_directed_optimizer import GPDirectedOptimizer, Variant
 
 
 def run_one(func_name: str, dim: int, variant: Variant, seed: int,
-            use_ml: bool, device: str, classifier_path: str) -> float:
+            use_ml: bool, device: str, classifier_path: str,
+            ml_v2: bool = False) -> float:
     opt = GPDirectedOptimizer(
         num_dim=dim,
         num_particles=max(50, 4 * dim),
@@ -26,6 +27,9 @@ def run_one(func_name: str, dim: int, variant: Variant, seed: int,
         seed=seed,
         use_ml_repositioning=use_ml,
         ml_classifier_path=classifier_path,
+        use_batch_acq=ml_v2,
+        use_uncertainty_split=ml_v2,
+        use_adaptive_period=ml_v2,
     )
     _, best_val = opt.run(max_evals=200 * dim)
     return float(best_val)
@@ -50,6 +54,9 @@ def main():
     parser.add_argument("--out", type=str, default=None,
                         help="Optional JSONL path for per-seed results")
     parser.add_argument("--ml-only", action="store_true")
+    parser.add_argument("--ml-v2", action="store_true",
+                        help="Enable batch acquisition, uncertainty-aware split, "
+                             "and adaptive ml_period (only affects ML runs).")
     args = parser.parse_args()
 
     device = args.device
@@ -75,15 +82,21 @@ def main():
                 results: list[float] = []
                 for s in range(args.seeds):
                     seed = args.seed_offset + s
-                    val = run_one(func_name, args.dim, v, seed, use_ml, device, args.classifier)
+                    val = run_one(func_name, args.dim, v, seed, use_ml, device,
+                                  args.classifier, ml_v2=(use_ml and args.ml_v2))
                     results.append(val)
                     if out_f:
                         out_f.write(json.dumps({
                             "func": func_name, "dim": args.dim, "variant": v.value,
-                            "use_ml": use_ml, "seed": seed, "best_value": val,
+                            "use_ml": use_ml, "ml_v2": bool(use_ml and args.ml_v2),
+                            "seed": seed, "best_value": val,
                         }) + "\n")
                         out_f.flush()
-                tag = f"GP-{v.value}{'+ML' if use_ml else ''}"
+                if use_ml:
+                    suffix = "+MLv2" if args.ml_v2 else "+ML"
+                else:
+                    suffix = ""
+                tag = f"GP-{v.value}{suffix}"
                 print(stats_line(tag, results))
 
     if out_f:

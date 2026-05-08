@@ -41,7 +41,13 @@ class GPDirectedOptimizer:
                  function: Function | None = None,
                  use_ml_repositioning: bool = False,
                  ml_classifier_path: str = "stuck_classifier.lgb",
-                 ml_period: int = 5):
+                 ml_period: int = 5,
+                 use_batch_acq: bool = False,
+                 use_uncertainty_split: bool = False,
+                 use_adaptive_period: bool = False,
+                 ml_min_gap: int = 3,
+                 ml_max_gap: int = 10,
+                 ml_stagnation_threshold: int = 3):
         if seed is not None:
             torch.manual_seed(seed)
 
@@ -68,10 +74,20 @@ class GPDirectedOptimizer:
 
         self.use_ml = use_ml_repositioning
         self.ml_period = ml_period
+        self.use_adaptive_period = use_adaptive_period
+        self.ml_min_gap = ml_min_gap
+        self.ml_max_gap = ml_max_gap
+        self.ml_stagnation_threshold = ml_stagnation_threshold
+        self.last_gbest_improve_iter = 0
+        self.last_ml_iter = 0
         self.ml_repositioner = None
         if use_ml_repositioning:
             from ml_repositioner import MLRepositioner
-            self.ml_repositioner = MLRepositioner(classifier_path=ml_classifier_path)
+            self.ml_repositioner = MLRepositioner(
+                classifier_path=ml_classifier_path,
+                use_batch_acq=use_batch_acq,
+                use_uncertainty_split=use_uncertainty_split,
+            )
 
     def run(self, max_evals: int):
         max_iters = max_evals // self.n
@@ -101,12 +117,32 @@ class GPDirectedOptimizer:
             self.swarm.last_values.clone(),
         )
 
-        if self.use_ml and self.iter_idx > 0 and self.iter_idx % self.ml_period == 0:
-            self.ml_repositioner.reposition(
-                swarm=self.swarm, gp=self.gp, memory=self.memory,
-                iter_idx=self.iter_idx, max_iters=max_iters,
-                skip_indices=moved_by_variant,
-            )
+        if self.use_ml:
+            if self.use_adaptive_period:
+                # history[-1] is the previous iteration's gbest (appended below)
+                if len(self.history) >= 1 and \
+                        self.swarm.global_best_value < self.history[-1] - 1e-12:
+                    self.last_gbest_improve_iter = self.iter_idx
+                gap = self.iter_idx - self.last_ml_iter
+                stagnation = self.iter_idx - self.last_gbest_improve_iter
+                should_trigger = (
+                    self.iter_idx > 0
+                    and gap >= self.ml_min_gap
+                    and (stagnation >= self.ml_stagnation_threshold
+                         or gap >= self.ml_max_gap)
+                )
+            else:
+                should_trigger = (
+                    self.iter_idx > 0 and self.iter_idx % self.ml_period == 0
+                )
+
+            if should_trigger:
+                self.ml_repositioner.reposition(
+                    swarm=self.swarm, gp=self.gp, memory=self.memory,
+                    iter_idx=self.iter_idx, max_iters=max_iters,
+                    skip_indices=moved_by_variant,
+                )
+                self.last_ml_iter = self.iter_idx
 
         self.history.append(self.swarm.global_best_value)
 
