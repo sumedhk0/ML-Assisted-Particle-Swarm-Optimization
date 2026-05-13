@@ -35,13 +35,13 @@ SUPPORTED_VARIANTS = [v.value for v in Variant] + [PSO_REFERENCE_VARIANT]
 LEGACY_ML_POLICIES = [RESCUE_POLICY_NONE, RESCUE_POLICY_LEARNED]
 
 
-def result_tag(variant: str, rescue_policy: str) -> str:
+def result_tag(variant: str, rescue_policy: str, ml_v2: bool = False) -> str:
     if variant == PSO_REFERENCE_VARIANT:
         return variant
     if rescue_policy == RESCUE_POLICY_NONE:
         suffix = ""
     elif rescue_policy == RESCUE_POLICY_LEARNED:
-        suffix = "+ML"
+        suffix = "+MLv2" if ml_v2 else "+ML"
     elif rescue_policy == RESCUE_POLICY_RANDOM:
         suffix = "+RANDOM"
     elif rescue_policy == RESCUE_POLICY_HEURISTIC_PLATEAU:
@@ -56,11 +56,13 @@ def run_one(func_name: str, dim: int, variant: str, seed: int,
             max_evals: int, max_wall_time_sec: float | None = None,
             trace_dir: str | None = None,
             trace_every: int = 1, curve_dir: str | None = None,
-            targets: list[float] | None = None) -> dict[str, object]:
+            targets: list[float] | None = None,
+            ml_v2: bool = False) -> dict[str, object]:
     trace_recorder = None
     n_particles = max(50, 4 * dim)
     targets = [] if targets is None else targets
     use_ml = rescue_policy == RESCUE_POLICY_LEARNED
+    v2 = bool(ml_v2 and use_ml)
     if trace_dir:
         trace_path = Path(trace_dir) / trace_file_name(
             func_name, dim, variant, use_ml, seed, rescue_policy=rescue_policy
@@ -99,6 +101,9 @@ def run_one(func_name: str, dim: int, variant: str, seed: int,
             ml_classifier_path=classifier_path,
             rescue_policy=rescue_policy,
             trace_recorder=trace_recorder,
+            use_batch_acq=v2,
+            use_uncertainty_split=v2,
+            use_adaptive_period=v2,
         )
     _, best_val = opt.run(max_evals=max_evals, max_wall_time_sec=max_wall_time_sec)
     if curve_dir:
@@ -135,6 +140,7 @@ def run_one(func_name: str, dim: int, variant: str, seed: int,
         "dim": dim,
         "variant": variant,
         "use_ml": use_ml,
+        "ml_v2": v2,
         "rescue_policy": rescue_policy,
         "seed": seed,
         "best_value": float(best_val),
@@ -205,6 +211,10 @@ def main():
     )
     parser.add_argument("--ml-only", action="store_true")
     parser.add_argument("--baseline-only", action="store_true")
+    parser.add_argument("--ml-v2", action="store_true",
+                        help="Enable batch acquisition, uncertainty-aware "
+                             "split, and adaptive ml_period. Only affects "
+                             "runs with rescue_policy=learned.")
     args = parser.parse_args()
 
     if args.ml_only and args.baseline_only:
@@ -267,12 +277,13 @@ def main():
                         max_wall_time_sec=args.max_wall_time_sec,
                         trace_dir=args.trace_dir, trace_every=args.trace_every,
                         curve_dir=args.curve_dir, targets=targets,
+                        ml_v2=args.ml_v2,
                     )
                     results.append(float(row["best_value"]))
                     if out_f:
                         out_f.write(json.dumps(row) + "\n")
                         out_f.flush()
-                tag = result_tag(v, rescue_policy)
+                tag = result_tag(v, rescue_policy, ml_v2=args.ml_v2)
                 print(stats_line(tag, results))
 
     if out_f:

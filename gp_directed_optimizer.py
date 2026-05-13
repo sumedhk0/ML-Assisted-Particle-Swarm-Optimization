@@ -50,7 +50,13 @@ class GPDirectedOptimizer:
                  ml_classifier_path: str = "stuck_classifier.lgb",
                  ml_period: int = 5,
                  rescue_policy: str | None = None,
-                 trace_recorder=None):
+                 trace_recorder=None,
+                 use_batch_acq: bool = False,
+                 use_uncertainty_split: bool = False,
+                 use_adaptive_period: bool = False,
+                 ml_min_gap: int = 3,
+                 ml_max_gap: int = 10,
+                 ml_stagnation_threshold: int = 3):
         if seed is not None:
             torch.manual_seed(seed)
 
@@ -90,6 +96,12 @@ class GPDirectedOptimizer:
 
         self.use_ml = use_ml_repositioning
         self.ml_period = ml_period
+        self.use_adaptive_period = use_adaptive_period
+        self.ml_min_gap = ml_min_gap
+        self.ml_max_gap = ml_max_gap
+        self.ml_stagnation_threshold = ml_stagnation_threshold
+        self.last_gbest_improve_iter = 0
+        self.last_ml_iter = 0
         if rescue_policy is None:
             rescue_policy = RESCUE_POLICY_LEARNED if use_ml_repositioning else RESCUE_POLICY_NONE
         if rescue_policy not in SUPPORTED_RESCUE_POLICIES:
@@ -104,6 +116,8 @@ class GPDirectedOptimizer:
             self.rescue_policy = build_rescue_policy(
                 rescue_policy,
                 classifier_path=ml_classifier_path,
+                use_batch_acq=use_batch_acq,
+                use_uncertainty_split=use_uncertainty_split,
             )
         if self.trace_recorder is not None and self.trace_recorder.should_record(0):
             self.trace_recorder.capture(0, self.eval_count, self.swarm, elapsed_sec=0.0)
@@ -171,15 +185,32 @@ class GPDirectedOptimizer:
         if (
             not self._wall_time_exhausted(max_wall_time_sec)
             and self.rescue_policy is not None
-            and self.iter_idx > 0
-            and self.iter_idx % self.ml_period == 0
         ):
-            rescue_stats = self.rescue_policy.reposition(
-                swarm=self.swarm, gp=self.gp, memory=self.memory,
-                iter_idx=self.iter_idx, max_iters=max_iters,
-                skip_indices=moved_by_variant,
-            )
-            self._record_rescue_stats(rescue_stats)
+            if self.use_adaptive_period:
+                # history[-1] is the previous iteration's gbest (appended below)
+                if len(self.history) >= 1 and \
+                        self.swarm.global_best_value < self.history[-1] - 1e-12:
+                    self.last_gbest_improve_iter = self.iter_idx
+                gap = self.iter_idx - self.last_ml_iter
+                stagnation = self.iter_idx - self.last_gbest_improve_iter
+                should_trigger = (
+                    self.iter_idx > 0
+                    and gap >= self.ml_min_gap
+                    and (stagnation >= self.ml_stagnation_threshold
+                         or gap >= self.ml_max_gap)
+                )
+            else:
+                should_trigger = (
+                    self.iter_idx > 0 and self.iter_idx % self.ml_period == 0
+                )
+            if should_trigger:
+                rescue_stats = self.rescue_policy.reposition(
+                    swarm=self.swarm, gp=self.gp, memory=self.memory,
+                    iter_idx=self.iter_idx, max_iters=max_iters,
+                    skip_indices=moved_by_variant,
+                )
+                self._record_rescue_stats(rescue_stats)
+                self.last_ml_iter = self.iter_idx
 
         self.history.append(self.swarm.global_best_value)
         self.iteration_history.append(self.iter_idx)

@@ -45,9 +45,13 @@ class RescueStats:
 class RescuePolicy(ABC):
     """Base class for selecting and relocating particles."""
 
-    def __init__(self, *, top_k_frac: float = 0.2, jitter_frac: float = 0.05):
+    def __init__(self, *, top_k_frac: float = 0.2, jitter_frac: float = 0.05,
+                 use_batch_acq: bool = False,
+                 use_uncertainty_split: bool = False):
         self.top_k_frac = top_k_frac
         self.jitter_frac = jitter_frac
+        self.use_batch_acq = use_batch_acq
+        self.use_uncertainty_split = use_uncertainty_split
 
     @property
     @abstractmethod
@@ -70,27 +74,59 @@ class RescuePolicy(ABC):
         low, high = swarm.bounds
         jitter_sigma = self.jitter_frac * (high - low)
 
-        n_exploit = len(flagged) // 2
+        # Lazy targets: with both v2 flags off, computation order matches the
+        # pre-v2 baseline bit-for-bit so reproducibility is preserved.
+        lcb_target = None
+        unc_target = None
+
+        started = time.perf_counter()
+        if self.use_uncertainty_split:
+            lcb_target, _ = gp.find_lcb_minimum(swarm.bounds, kappa=1.6)
+            unc_target, max_std = gp.find_max_uncertainty(swarm.bounds)
+            _, std_at_lcb = gp.predict(lcb_target.unsqueeze(0))
+            ratio = float(std_at_lcb) / (float(max_std) + 1e-9)
+            explore_frac = float(np.clip(1.0 - ratio, 0.2, 0.8))
+            n_explore = max(1, int(round(len(flagged) * explore_frac)))
+            n_exploit = len(flagged) - n_explore
+        else:
+            n_exploit = len(flagged) // 2
+            n_explore = len(flagged) - n_exploit
+
         exploit_idx = flagged[:n_exploit]
-        explore_idx = flagged[n_exploit:]
+        explore_idx = flagged[n_exploit:n_exploit + n_explore]
 
         indices: list[int] = []
         positions: list[torch.Tensor] = []
 
-        started = time.perf_counter()
         if exploit_idx:
-            target, _ = gp.find_lcb_minimum(swarm.bounds, kappa=1.6)
-            for idx in exploit_idx:
-                p = target + torch.randn(swarm.dim, device=device) * jitter_sigma
-                positions.append(p.clamp(low, high))
-                indices.append(idx)
+            if self.use_batch_acq:
+                targets = gp.find_batch_lcb_minimum(
+                    swarm.bounds, K=len(exploit_idx), kappa=1.6)
+                for idx, t in zip(exploit_idx, targets):
+                    positions.append(t.clamp(low, high))
+                    indices.append(idx)
+            else:
+                if lcb_target is None:
+                    lcb_target, _ = gp.find_lcb_minimum(swarm.bounds, kappa=1.6)
+                for idx in exploit_idx:
+                    p = lcb_target + torch.randn(swarm.dim, device=device) * jitter_sigma
+                    positions.append(p.clamp(low, high))
+                    indices.append(idx)
 
         if explore_idx:
-            target, _ = gp.find_max_uncertainty(swarm.bounds)
-            for idx in explore_idx:
-                p = target + torch.randn(swarm.dim, device=device) * jitter_sigma
-                positions.append(p.clamp(low, high))
-                indices.append(idx)
+            if self.use_batch_acq:
+                targets = gp.find_batch_max_uncertainty(
+                    swarm.bounds, K=len(explore_idx))
+                for idx, t in zip(explore_idx, targets):
+                    positions.append(t.clamp(low, high))
+                    indices.append(idx)
+            else:
+                if unc_target is None:
+                    unc_target, _ = gp.find_max_uncertainty(swarm.bounds)
+                for idx in explore_idx:
+                    p = unc_target + torch.randn(swarm.dim, device=device) * jitter_sigma
+                    positions.append(p.clamp(low, high))
+                    indices.append(idx)
         stats.time_acquisition_sec += time.perf_counter() - started
 
         idx_tensor = torch.tensor(indices, device=device, dtype=torch.long)
@@ -123,8 +159,11 @@ class LearnedRescuePolicy(RescuePolicy):
 
     policy_name = RESCUE_POLICY_LEARNED
 
-    def __init__(self, classifier_path: str, *, top_k_frac: float = 0.2, jitter_frac: float = 0.05):
-        super().__init__(top_k_frac=top_k_frac, jitter_frac=jitter_frac)
+    def __init__(self, classifier_path: str, *, top_k_frac: float = 0.2, jitter_frac: float = 0.05,
+                 use_batch_acq: bool = False, use_uncertainty_split: bool = False):
+        super().__init__(top_k_frac=top_k_frac, jitter_frac=jitter_frac,
+                         use_batch_acq=use_batch_acq,
+                         use_uncertainty_split=use_uncertainty_split)
         import lightgbm as lgb
 
         self.booster = lgb.Booster(model_file=classifier_path)
@@ -200,6 +239,8 @@ def build_rescue_policy(
     classifier_path: str,
     top_k_frac: float = 0.2,
     jitter_frac: float = 0.05,
+    use_batch_acq: bool = False,
+    use_uncertainty_split: bool = False,
 ) -> RescuePolicy | None:
     if policy_name == RESCUE_POLICY_NONE:
         return None
@@ -208,11 +249,21 @@ def build_rescue_policy(
             classifier_path=classifier_path,
             top_k_frac=top_k_frac,
             jitter_frac=jitter_frac,
+            use_batch_acq=use_batch_acq,
+            use_uncertainty_split=use_uncertainty_split,
         )
     if policy_name == RESCUE_POLICY_RANDOM:
-        return RandomRescuePolicy(top_k_frac=top_k_frac, jitter_frac=jitter_frac)
+        return RandomRescuePolicy(
+            top_k_frac=top_k_frac, jitter_frac=jitter_frac,
+            use_batch_acq=use_batch_acq,
+            use_uncertainty_split=use_uncertainty_split,
+        )
     if policy_name == RESCUE_POLICY_HEURISTIC_PLATEAU:
-        return HeuristicPlateauRescuePolicy(top_k_frac=top_k_frac, jitter_frac=jitter_frac)
+        return HeuristicPlateauRescuePolicy(
+            top_k_frac=top_k_frac, jitter_frac=jitter_frac,
+            use_batch_acq=use_batch_acq,
+            use_uncertainty_split=use_uncertainty_split,
+        )
     raise ValueError(
         f"Unknown rescue policy: {policy_name}. "
         f"Available: {SUPPORTED_RESCUE_POLICIES}"
