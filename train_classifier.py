@@ -48,9 +48,16 @@ def main():
     clf.fit(X[tr], y[tr], X[va], y[va])
 
     preds = clf.predict_proba(X[te])
-    auc = roc_auc_score(y[te], preds)
-    f1 = f1_score(y[te], preds > 0.5)
-    print(f"\nTEST  AUC={auc:.4f}  F1={f1:.4f}")
+    unique_test = np.unique(y[te])
+    if unique_test.size < 2:
+        print(
+            "\nTEST  AUC=undefined  F1=undefined  "
+            f"(single class in test split: {unique_test[0]})"
+        )
+    else:
+        auc = roc_auc_score(y[te], preds)
+        f1 = f1_score(y[te], preds > 0.5)
+        print(f"\nTEST  AUC={auc:.4f}  F1={f1:.4f}")
 
     imp = clf.booster.feature_importance(importance_type="gain")
     order = np.argsort(-imp)
