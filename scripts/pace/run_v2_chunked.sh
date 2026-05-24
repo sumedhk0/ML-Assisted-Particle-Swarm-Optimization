@@ -56,6 +56,11 @@ if [[ -z "${TRAIN_DEP}" ]]; then
 fi
 echo
 
+# Dependency handling:
+#   TRAIN_DEP unset  -> submit data-gen + train, depend on the train job
+#   TRAIN_DEP=none   -> no dependency (classifier already exists at ${CLF})
+#   TRAIN_DEP=<jobid>-> depend on that existing train job
+DEP_ARGS=()
 if [[ -z "${TRAIN_DEP}" ]]; then
   # --- Stage 1: generate training data (GPU) ---
   DATA_JOB=$(sbatch --parsable \
@@ -68,22 +73,30 @@ if [[ -z "${TRAIN_DEP}" ]]; then
     --export=ALL,PACE_SCRATCH_ROOT=${PACE_SCRATCH_ROOT},CLASSIFIER_PATH=${CLF},FORCE_RETRAIN=0 \
     slurm/train.sbatch)
   echo "train:     ${TRAIN_JOB}"
-  DEP="afterok:${TRAIN_JOB}"
+  DEP_ARGS=(--dependency=afterok:${TRAIN_JOB})
+elif [[ "${TRAIN_DEP}" == "none" ]]; then
+  echo "No train dependency; expecting classifier already present at ${CLF}"
 else
   echo "Reusing existing train job ${TRAIN_DEP} (skipping data-gen + train)"
-  DEP="afterok:${TRAIN_DEP}"
+  DEP_ARGS=(--dependency=afterok:${TRAIN_DEP})
 fi
+
+# Export so sbatch --export=ALL carries them. VARIANTS contains commas, which
+# are the --export list delimiter, so it MUST ride in the environment rather
+# than be listed inline (otherwise sbatch reads only "A1" and drops the rest).
+export PACE_SCRATCH_ROOT DIM SEEDS SEEDS_PER_TASK VARIANTS CLF
 
 # --- Stage 3: v2 ML, one array per function, SEEDS_PER_TASK seeds per task ---
 V2_JOBS=()
 for FUNC in ${FUNCS}; do
-  JID=$(sbatch --parsable --dependency=${DEP} \
+  export FUNC
+  JID=$(sbatch --parsable "${DEP_ARGS[@]}" \
     --array=0-$((NUM_CHUNKS-1))%${CONCURRENCY} \
     --job-name="v2_${FUNC}" \
     -A "${ACCOUNT}" --qos="${QOS}" -p cpu-small --requeue \
     --nodes=1 --ntasks=1 --cpus-per-task=4 --mem=16G --time=08:00:00 \
     --output=logs/%x-%A_%a.out --error=logs/%x-%A_%a.err \
-    --export=ALL,PACE_SCRATCH_ROOT=${PACE_SCRATCH_ROOT},FUNC=${FUNC},DIM=${DIM},SEEDS=${SEEDS},SEEDS_PER_TASK=${SEEDS_PER_TASK},VARIANTS=${VARIANTS},CLF=${CLF} \
+    --export=ALL \
     "${SCRIPT_DIR}/_v2_task.sh")
   V2_JOBS+=("${JID}")
   echo "v2 ${FUNC}: ${JID}"
