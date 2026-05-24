@@ -125,24 +125,39 @@ class GPSurrogate:
     def _default_penalty_radius(self, bounds) -> float:
         # One ARD median lengthscale: the natural correlation distance. Penalty
         # bumps centered on a pick decay over this distance, pushing next picks
-        # past it. Lengthscale is already in input units; clamp to a reasonable
-        # fraction of the span so picks aren't trivially close or pushed to
-        # corners.
+        # past it. Lengthscale is already in input units; clamp to a fraction
+        # of the span. The upper clamp matters: on smooth functions the fitted
+        # lengthscale can approach the whole domain, and a penalty that wide is
+        # nearly flat (it can't separate picks), so cap it at 0.2*span.
         low, high = bounds
         span = high - low
         if self.model is None:
             return 0.05 * span
         ls = self.model.covar_module.base_kernel.lengthscale.detach()
         radius = float(ls.median())
-        return max(0.02 * span, min(radius, 0.5 * span))
+        return max(0.05 * span, min(radius, 0.2 * span))
 
     def _find_batch(self, base_acq_fn, bounds, K: int,
                     penalty_radius: float | None,
                     penalty_strength: float,
                     n_starts: int, iters: int):
+        low, high = bounds
         if penalty_radius is None:
             penalty_radius = self._default_penalty_radius(bounds)
         r2 = 2.0 * penalty_radius * penalty_radius
+
+        # Scale the penalty to the acquisition's own dynamic range. The base
+        # acquisition is in objective units (LCB) or std units (uncertainty),
+        # which vary by function and by fit; a fixed absolute bump is negligible
+        # on some scales (picks collapse) and overwhelming on others (picks fly
+        # to corners). Probing the range makes penalty_strength=1.0 mean "one
+        # acquisition-range tall", so the same default behaves sanely anywhere.
+        with torch.no_grad():
+            probe = torch.empty(max(256, n_starts), self.dim,
+                                device=self.device).uniform_(low, high)
+            base_probe = base_acq_fn(probe)
+            acq_scale = float(base_probe.max() - base_probe.min())
+        eff_strength = penalty_strength * (acq_scale if acq_scale > 1e-9 else 1.0)
 
         picks: list[torch.Tensor] = []
         for _ in range(K):
@@ -155,7 +170,7 @@ class GPSurrogate:
                 # x: (S, D), _picked: (P, D) -> diffs: (S, P, D)
                 diffs = x.unsqueeze(1) - _picked.unsqueeze(0)
                 d2 = (diffs * diffs).sum(dim=-1)
-                bumps = penalty_strength * torch.exp(-d2 / r2)
+                bumps = eff_strength * torch.exp(-d2 / r2)
                 return base + bumps.sum(dim=-1)
 
             x_new, _ = self._acquisition_opt(acq, bounds, n_starts, iters)
