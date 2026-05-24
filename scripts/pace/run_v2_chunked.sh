@@ -80,7 +80,7 @@ for FUNC in ${FUNCS}; do
   JID=$(sbatch --parsable --dependency=${DEP} \
     --array=0-$((NUM_CHUNKS-1))%${CONCURRENCY} \
     --job-name="v2_${FUNC}" \
-    -A "${ACCOUNT}" --qos="${QOS}" -p cpu-small \
+    -A "${ACCOUNT}" --qos="${QOS}" -p cpu-small --requeue \
     --nodes=1 --ntasks=1 --cpus-per-task=4 --mem=16G --time=08:00:00 \
     --output=logs/%x-%A_%a.out --error=logs/%x-%A_%a.err \
     --export=ALL,PACE_SCRATCH_ROOT=${PACE_SCRATCH_ROOT},FUNC=${FUNC},DIM=${DIM},SEEDS=${SEEDS},SEEDS_PER_TASK=${SEEDS_PER_TASK},VARIANTS=${VARIANTS},CLF=${CLF} \
